@@ -14,6 +14,6 @@ RUN apt-get update -y && apt-get install -y dos2unix && \
     dos2unix /app/entrypoint.sh && chmod +x /app/entrypoint.sh && \
     apt-get purge -y --auto-remove dos2unix && rm -rf /var/lib/apt/lists/*
 
-EXPOSE 5000
+EXPOSE 80
 
 ENTRYPOINT ["/app/entrypoint.sh"]

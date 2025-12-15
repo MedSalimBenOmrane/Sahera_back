@@ -18,4 +18,5 @@ if [ -n "$DATABASE_URL" ]; then
   done
 fi
 
-exec gunicorn -b "0.0.0.0:${PORT:-5000}" main:app
+# Listen on PORT if provided by the platform; default to 80 for EB/ALB expectations
+exec gunicorn -b "0.0.0.0:${PORT:-80}" main:app
