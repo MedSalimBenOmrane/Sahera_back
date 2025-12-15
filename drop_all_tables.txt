@@ -1,3 +1,4 @@
+changes
 #to create the tables when it's the first time to launch the docker compose : 
 
 1.conncect to the flask container using : 
