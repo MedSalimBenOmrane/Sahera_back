@@ -1,0 +1,12 @@
+Flask
+Flask_SQLAlchemy
+psycopg2-binary
+python-dotenv
+flask-bcrypt
+flask-jwt-extended
+flask-cors
+bcrypt
+PyJWT
+itsdangerous
+gunicorn
+Flask-Migrate

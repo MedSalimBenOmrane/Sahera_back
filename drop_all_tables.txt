@@ -1,0 +1,27 @@
+#to create the tables when it's the first time to launch the docker compose : 
+
+1.conncect to the flask container using : 
+docker exec -it <id-flask-container> /bin/bash 
+python db_init. 
+
+2.connect to the adminer contaienr : 
+you should put credentiels, availabe on the docker compose , user , secreet , host 
+then you should be able to see all tables 
+
+
+
+#connect to postgres container 
+docker exec ....   /bin/bash
+
+#connect db : 
+psql -U user -d postgres
+
+
+#Paste this :
+DO $$ DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = current_schema()) LOOP
+        EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
+    END LOOP;
+END $$;
