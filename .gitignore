@@ -3,6 +3,8 @@
 .elasticbeanstalk/*
 !.elasticbeanstalk/*.cfg.yml
 !.elasticbeanstalk/*.global.yml
+!.elasticbeanstalk/nginx/
+!.elasticbeanstalk/nginx/**
 
 # Python / env
 __pycache__/
