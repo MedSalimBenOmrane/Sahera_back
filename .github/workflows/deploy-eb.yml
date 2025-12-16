@@ -21,7 +21,7 @@ jobs:
       - name: Zip source bundle
         run: |
           zip -r app.zip . \
-            -x ".git/*" ".github/*" "__pycache__/*" "*.pyc" ".env" "venv/*" ".venv/*" "node_modules/*"
+            -x ".git/*" ".github/*" "__pycache__/*" "*.pyc" ".env" "venv/*" ".venv/*" "node_modules/*" "docker-compose.yml" "Dockerfile_dev"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
