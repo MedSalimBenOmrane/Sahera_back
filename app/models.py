@@ -111,6 +111,14 @@ class Admin(db.Model):
     mot_de_passe = db.Column(db.String(255), nullable=False)
     date_naissance = db.Column(db.Date, nullable=True)
     telephone = db.Column(db.String(20), nullable=True)
+    # SMTP / mailing config (overrides defaults if set)
+    mail_sender_email = db.Column(db.String(255), nullable=True)
+    mail_sender_name = db.Column(db.String(255), nullable=True)
+    smtp_host = db.Column(db.String(255), nullable=True)
+    smtp_port = db.Column(db.Integer, nullable=True)
+    smtp_use_tls = db.Column(db.Boolean, nullable=True)
+    smtp_username = db.Column(db.String(255), nullable=True)
+    smtp_password = db.Column(db.String(255), nullable=True)
 
 
 class Reponse(db.Model):

@@ -1,6 +1,7 @@
 import ssl, smtplib
 from email.message import EmailMessage
 from flask import current_app
+from app.models import Admin
 
 
 
@@ -9,8 +10,18 @@ def send_email(to, subject, text_body, html_body=None, reply_to=None, cc=None, b
     to: str ou list[str]
     """
     msg = EmailMessage()
-    sender_email = current_app.config.get("MAIL_SENDER_EMAIL")
-    sender_name  = current_app.config.get("MAIL_SENDER_NAME", "")
+    admin_cfg = Admin.query.order_by(Admin.id).first()
+    cfg = current_app.config
+
+    sender_email = (
+        (admin_cfg.mail_sender_email if admin_cfg else None)
+        or (admin_cfg.email if admin_cfg else None)
+        or cfg.get("MAIL_SENDER_EMAIL")
+    )
+    sender_name = (
+        (admin_cfg.mail_sender_name if admin_cfg else None)
+        or cfg.get("MAIL_SENDER_NAME", "")
+    )
     from_header  = f"{sender_name} <{sender_email}>" if sender_name else sender_email
 
     msg["From"] = from_header
@@ -26,18 +37,24 @@ def send_email(to, subject, text_body, html_body=None, reply_to=None, cc=None, b
     if html_body:
         msg.add_alternative(html_body, subtype="html")
 
-    host = current_app.config["SMTP_HOST"]
-    port = int(current_app.config["SMTP_PORT"])
-    use_tls = current_app.config.get("SMTP_USE_TLS", True)
-    # yourapp/mailer.py
-    username = (current_app.config.get("SMTP_USERNAME") or "").strip()
-    password = (current_app.config.get("SMTP_PASSWORD") or "").strip()
+    host = (admin_cfg.smtp_host if admin_cfg and admin_cfg.smtp_host else None) or cfg.get("SMTP_HOST")
+    port = int((admin_cfg.smtp_port if admin_cfg and admin_cfg.smtp_port else None) or cfg.get("SMTP_PORT", 587))
+    use_tls = admin_cfg.smtp_use_tls if admin_cfg and admin_cfg.smtp_use_tls is not None else cfg.get("SMTP_USE_TLS", True)
+    username = (
+        (admin_cfg.smtp_username if admin_cfg and admin_cfg.smtp_username else None)
+        or (admin_cfg.email if admin_cfg else None)
+        or (cfg.get("SMTP_USERNAME") or "")
+    ).strip()
+    password = (
+        (admin_cfg.smtp_password if admin_cfg and admin_cfg.smtp_password else None)
+        or (cfg.get("SMTP_PASSWORD") or "")
+    ).strip()
 
     current_app.logger.info(
         "SMTP: host=%s port=%s tls=%s user=%s pwd_len=%d",
-        current_app.config.get("SMTP_HOST"),
-        current_app.config.get("SMTP_PORT"),
-        current_app.config.get("SMTP_USE_TLS"),
+        host,
+        port,
+        use_tls,
         username,
         len(password)
 )

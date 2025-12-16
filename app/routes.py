@@ -1052,7 +1052,14 @@ def get_admins():
             "prenom": a.prenom,
             "email": a.email,
             "date_naissance": a.date_naissance.isoformat() if a.date_naissance else None,
-            "telephone": a.telephone
+            "telephone": a.telephone,
+            "mail_sender_email": a.mail_sender_email,
+            "mail_sender_name": a.mail_sender_name,
+            "smtp_host": a.smtp_host,
+            "smtp_port": a.smtp_port,
+            "smtp_use_tls": a.smtp_use_tls,
+            "smtp_username": a.smtp_username,
+            "smtp_password": a.smtp_password,
         } for a in admins
     ])
 
@@ -1066,7 +1073,14 @@ def get_admin(id):
         "prenom": a.prenom,
         "email": a.email,
         "date_naissance": a.date_naissance.isoformat() if a.date_naissance else None,
-        "telephone": a.telephone
+        "telephone": a.telephone,
+        "mail_sender_email": a.mail_sender_email,
+        "mail_sender_name": a.mail_sender_name,
+        "smtp_host": a.smtp_host,
+        "smtp_port": a.smtp_port,
+        "smtp_use_tls": a.smtp_use_tls,
+        "smtp_username": a.smtp_username,
+        "smtp_password": a.smtp_password,
     })
 
 # POST create a new admin
@@ -1106,6 +1120,14 @@ def update_admin(id):
     admin.email = data.get("email", admin.email)
     admin.date_naissance = data.get("date_naissance", admin.date_naissance)
     admin.telephone = data.get("telephone", admin.telephone)
+    admin.mail_sender_email = data.get("mail_sender_email", admin.mail_sender_email)
+    admin.mail_sender_name = data.get("mail_sender_name", admin.mail_sender_name)
+    admin.smtp_host = data.get("smtp_host", admin.smtp_host)
+    admin.smtp_port = data.get("smtp_port", admin.smtp_port)
+    if "smtp_use_tls" in data:
+        admin.smtp_use_tls = bool(data.get("smtp_use_tls"))
+    admin.smtp_username = data.get("smtp_username", admin.smtp_username)
+    admin.smtp_password = data.get("smtp_password", admin.smtp_password)
 
     nouveau_mot_de_passe = data.get("mot_de_passe")
     if nouveau_mot_de_passe:
