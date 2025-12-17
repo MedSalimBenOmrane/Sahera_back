@@ -16,8 +16,10 @@ def create_app():
 
     app = Flask(__name__)
 
-    # Enable CORS for all /api/* routes
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    # Enable CORS for all /api/* routes (explicit origins only)
+    cors_origins = os.getenv("CORS_ORIGINS") or os.getenv("FRONTEND_BASE_URL") or "https://sahera-webapp.ca"
+    allowed_origins = [o.strip() for o in cors_origins.split(",") if o.strip()]
+    CORS(app, resources={r"/api/*": {"origins": allowed_origins}})
 
     # Prefer a full DATABASE_URL; fallback to individual pieces for local/dev
     database_url = os.getenv("DATABASE_URL")
