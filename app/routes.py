@@ -1,4 +1,5 @@
 from flask import Blueprint, jsonify, request, abort
+from werkzeug.exceptions import HTTPException
 from app.models import Thematique, SousThematique, Question, Utilisateur, Admin, Reponse,Notification, NotificationUtilisateur
 from app.extensions import db
 from flask_bcrypt import Bcrypt
@@ -12,6 +13,7 @@ from flask import current_app, request, jsonify, abort
 import os
 import io
 import csv
+import json
 from sqlalchemy import  or_  
 from sqlalchemy import func, case, and_
 from sqlalchemy import JSON
@@ -110,6 +112,18 @@ def _validate_option_alignment(options_fr, options_en, ctx=None):
         abort(400, description=f"`options` et `options_en` doivent avoir la meme longueur pour aligner les traductions.{detail}")
 
 
+def _normalize_type(raw):
+    if raw is None:
+        return ""
+    value = str(raw).strip().lower()
+    if not value:
+        return ""
+    value = value.replace(" ", "_").replace("-", "_")
+    if value == "texte":
+        return "text"
+    return value
+
+
 def _serialize_question(q, lang):
     options_localized = _localize_value(q.options, q.options_en, lang)
     return {
@@ -176,6 +190,36 @@ def _map_option_value(value, options_fr, options_en, target_lang):
         return value
 
 
+def _map_option_values(values, options_fr, options_en, target_lang):
+    if not values:
+        return []
+    return [_map_option_value(v, options_fr, options_en, target_lang) for v in values]
+
+
+def _parse_multi_contenu(raw):
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(v).strip() for v in raw if str(v).strip()]
+    if isinstance(raw, str):
+        raw_str = raw.strip()
+        if not raw_str:
+            return []
+        if raw_str.startswith("[") and raw_str.endswith("]"):
+            try:
+                parsed = json.loads(raw_str)
+                if isinstance(parsed, list):
+                    return [str(v).strip() for v in parsed if str(v).strip()]
+            except Exception:
+                pass
+        if "||" in raw_str:
+            return [s.strip() for s in raw_str.split("||") if s.strip()]
+        if "/" in raw_str:
+            return [s for s in _split_values(raw_str, "contenu") if s]
+        return [raw_str]
+    return []
+
+
 def _serialize_reponse(r, lang):
     q = getattr(r, "question", None)
     qtype = getattr(q, "type_champ", "liste") if q else "liste"
@@ -188,13 +232,21 @@ def _serialize_reponse(r, lang):
         contenu_fr = _map_option_value(r.contenu, options_fr, options_en, "fr")
         contenu_en = _map_option_value(r.contenu, options_fr, options_en, "en")
         contenu_localized = _map_option_value(r.contenu, options_fr, options_en, lang)
+        contenu_raw = r.contenu
+    elif q and qtype == "liste_multiple":
+        raw_values = _parse_multi_contenu(r.contenu)
+        contenu_fr = _map_option_values(raw_values, options_fr, options_en, "fr")
+        contenu_en = _map_option_values(raw_values, options_fr, options_en, "en")
+        contenu_localized = _map_option_values(raw_values, options_fr, options_en, lang)
+        contenu_raw = raw_values
     else:
         contenu_localized = r.contenu
+        contenu_raw = r.contenu
 
     return {
         "id": r.id,
         "contenu": contenu_localized,
-        "contenu_raw": r.contenu,
+        "contenu_raw": contenu_raw,
         "contenu_fr": contenu_fr,
         "contenu_en": contenu_en,
         "date_creation": r.date_creation.isoformat() if r.date_creation else None,
@@ -394,7 +446,7 @@ def import_sous_thematiques_questions(thematique_id):
     """
     CSV attendu avec entêtes:
       sous_thematique,question,options
-    - options: liste séparée par '|', ';' ou ',' (ex: Oui|Non|NSP)
+    - options: liste separee par '/' (ex: Oui/Non/NSP)
 
     Chaque ligne:
       - crée la sous-thématique si nécessaire
@@ -409,8 +461,22 @@ def import_sous_thematiques_questions(thematique_id):
         abort(400, description="No file selected")
 
     try:
-        stream = io.StringIO(file.stream.read().decode('utf-8'))
-        reader = csv.DictReader(stream)
+        raw_bytes = file.stream.read()
+        try:
+            decoded = raw_bytes.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            decoded = raw_bytes.decode("cp1252")
+        lines = decoded.splitlines()
+        if not lines:
+            abort(400, description="CSV vide.")
+        header_line = lines[0]
+        delimiter = ","
+        if ";" in header_line and "," not in header_line:
+            delimiter = ";"
+        elif "\t" in header_line and "," not in header_line and ";" not in header_line:
+            delimiter = "\t"
+        stream = io.StringIO(decoded)
+        reader = csv.DictReader(stream, delimiter=delimiter)
         # Normaliser les entetes (BOM, espaces superflus)
         fieldnames = [(h or '').replace('\ufeff', '').strip() for h in (reader.fieldnames or [])]
         reader.fieldnames = fieldnames
@@ -419,7 +485,13 @@ def import_sous_thematiques_questions(thematique_id):
         required_headers = {'sous_thematique', 'question', 'type', 'options'}
         optional_headers = {'sous_thematique_en', 'question_en', 'options_en'}
         if not required_headers.issubset(headers):
-            abort(400, description="Entetes CSV attendues au minimum: sous_thematique,question,type,options")
+            abort(
+                400,
+                description=(
+                    "Entetes CSV attendues au minimum: sous_thematique,question,type,options "
+                    "(verifier le delimitateur , ; ou tab)."
+                ),
+            )
         unknown = headers - (required_headers | optional_headers)
         if unknown:
             abort(400, description=f"Entetes CSV inconnues: {', '.join(sorted(unknown))}")
@@ -431,38 +503,44 @@ def import_sous_thematiques_questions(thematique_id):
 
     cache_sous = {}  # pour éviter requêtes répétées
 
-    for row in reader:
-        titre_sous = (row.get('sous_thematique') or '').strip()
-        titre_sous_en = (row.get('sous_thematique_en') or '').strip()
-        texte_q = (row.get('question') or '').strip()
-        texte_q_en = (row.get('question_en') or '').strip()
-        type_str = (row.get('type') or '').strip().lower()
-        raw_opts = row.get('options')
-        raw_opts_en = row.get('options_en')
+    for line_num, row in enumerate(reader, start=2):
+        try:
+            has_any = any(str(v).strip() for v in row.values() if v is not None)
+            if not has_any:
+                continue
+            titre_sous = (row.get('sous_thematique') or '').strip()
+            titre_sous_en = (row.get('sous_thematique_en') or '').strip()
+            texte_q = (row.get('question') or '').strip()
+            texte_q_en = (row.get('question_en') or '').strip()
+            type_str = _normalize_type(row.get('type'))
+            raw_opts = row.get('options')
+            raw_opts_en = row.get('options_en')
 
-        def _none_if_blank(val):
-            if val is None:
-                return None
-            if isinstance(val, str) and val.strip() == "":
-                return None
-            return val
+            def _none_if_blank(val):
+                if val is None:
+                    return None
+                if isinstance(val, str) and val.strip() == "":
+                    return None
+                return val
 
-        if not titre_sous or not texte_q or not type_str:
-            # ligne incomplète
-            continue
+            if not titre_sous or not texte_q or not type_str:
+                abort(400, description="Champs requis: sous_thematique, question, type")
 
-        if type_str not in ("liste", "text", "date"):
-            # type non supporté
-            continue
+            if type_str not in ("liste", "liste_multiple", "text", "date"):
+                abort(400, description="Type non supporte (liste, liste_multiple, text, date).")
 
-        options = None
-        options_en = None
-        if type_str == "liste":
-            options = _normalize_options(raw_opts)
-            raw_opts_en = _none_if_blank(raw_opts_en)
-            if raw_opts_en is not None:
-                options_en = _normalize_options(raw_opts_en)
-            _validate_option_alignment(options, options_en, ctx=texte_q)
+            options = None
+            options_en = None
+            if type_str in ("liste", "liste_multiple"):
+                options = _normalize_options(raw_opts)
+                raw_opts_en = _none_if_blank(raw_opts_en)
+                if raw_opts_en is not None:
+                    options_en = _normalize_options(raw_opts_en)
+                _validate_option_alignment(options, options_en, ctx=texte_q)
+        except HTTPException as exc:
+            abort(exc.code or 400, description=f"Ligne {line_num}: {exc.description}")
+        except Exception as exc:
+            abort(400, description=f"Ligne {line_num}: {exc}")
 
         key = (thematique.id, titre_sous)
         sous = cache_sous.get(key)
@@ -697,24 +775,86 @@ def delete_sousthematique(thematique_id, id):
 # Question routes
 #helpers 
 # Helpers pour normaliser et valider les options
+def _split_values(raw, field_name):
+    if isinstance(raw, str):
+        if "/" in raw:
+            items = []
+            buf = []
+            i = 0
+            while i < len(raw):
+                ch = raw[i]
+                if ch == "\\" and i + 1 < len(raw) and raw[i + 1] == "/":
+                    buf.append("/")
+                    i += 2
+                    continue
+                if ch == "/":
+                    items.append("".join(buf).strip())
+                    buf = []
+                    i += 1
+                    continue
+                buf.append(ch)
+                i += 1
+            items.append("".join(buf).strip())
+            return items
+        return [raw.strip()]
+    if isinstance(raw, list):
+        return [str(s).strip() for s in raw]
+    abort(400, description=f"`{field_name}` doit etre une liste de chaines ou une chaine separee par / (utiliser \\/ pour un / literal)")
+
+
+def _normalize_multi_values(raw):
+    if raw is None:
+        abort(400, description="`contenu` est requis.")
+
+    items = None
+    if isinstance(raw, str):
+        raw_str = raw.strip()
+        if raw_str.startswith("[") and raw_str.endswith("]"):
+            try:
+                parsed = json.loads(raw_str)
+                if isinstance(parsed, list):
+                    items = [str(s).strip() for s in parsed]
+            except Exception:
+                items = None
+        if items is None:
+            items = _split_values(raw_str, "contenu")
+    else:
+        items = _split_values(raw, "contenu")
+
+    seen, cleaned = set(), []
+    for s in items:
+        if not s:
+            continue
+        if len(s) > 255:
+            abort(400, description="Une valeur depasse 255 caracteres.")
+        if s not in seen:
+            cleaned.append(s)
+            seen.add(s)
+
+    if not cleaned:
+        abort(400, description="`contenu` ne peut pas etre vide.")
+    return cleaned
+
+
+def _serialize_multi_values(values):
+    return json.dumps(values, ensure_ascii=False)
+
+
 def _normalize_options(raw):
     """
     Accepte:
-      - liste de chaînes
-      - chaîne unique avec séparateurs '|', ';' ou ',' -> ex: "Oui|Non|NSP"
-    Retourne une liste de chaînes nettoyées, uniques, ordre conservé.
+      - liste de chaines
+      - chaine unique avec separateur '/' -> ex: "Oui/Non/NSP"
+    Retourne une liste de chaines nettoyees, uniques, ordre conserve.
     """
     if raw is None:
         return None
-
     if isinstance(raw, str):
-        # priorité au '|' puis fallback ';' puis ','
-        sep = '|' if '|' in raw else (';' if ';' in raw else ',')
-        items = [s.strip() for s in raw.split(sep)]
+        items = _split_values(raw, "options")
     elif isinstance(raw, list):
-        items = [str(s).strip() for s in raw]
+        items = _split_values(raw, "options")
     else:
-        abort(400, description="`options` doit être une liste de chaînes ou une chaîne séparée par | ; ,")
+        abort(400, description="`options` doit etre une liste de chaines ou une chaine separee par / (utiliser \\/ pour un / literal)")
 
     # filtre vides + unicité
     seen, cleaned = set(), []
@@ -740,6 +880,17 @@ def _assert_value_in_options(contenu, options, options_en=None):
         available.update(options_en)
     if contenu not in available:
         abort(400, description="La réponse doit être l'une des options disponibles.")
+
+
+def _assert_values_in_options(values, options, options_en=None):
+    if not values:
+        abort(400, description="`contenu` est requis.")
+    available = set(options or [])
+    if options_en:
+        available.update(options_en)
+    missing = [v for v in values if v not in available]
+    if missing:
+        abort(400, description="La reponse doit etre l'une des options disponibles.")
 #Admin,User
 
 @api_bp.route("/questions", methods=["GET"])
@@ -806,15 +957,15 @@ def create_question():
     if "texte" not in data or "sous_thematique_id" not in data:
         abort(400, description="Champs requis: texte, sous_thematique_id")
 
-    type_str = (data.get("type") or "liste").strip().lower()
-    if type_str not in ("liste", "text", "date"):
-        abort(400, description="type invalide: doit être 'liste', 'text' ou 'date'")
+    type_str = _normalize_type(data.get("type")) or "liste"
+    if type_str not in ("liste", "liste_multiple", "text", "date"):
+        abort(400, description="type invalide: doit etre 'liste', 'liste_multiple', 'text' ou 'date'")
 
     options = None
     options_en = None
-    if type_str == "liste":
+    if type_str in ("liste", "liste_multiple"):
         if "options" not in data:
-            abort(400, description="`options` est requis pour le type 'liste'")
+            abort(400, description="`options` est requis pour le type 'liste' ou 'liste_multiple'")
         options = _normalize_options(data["options"])
         if "options_en" in data:
             options_en = _normalize_options(data["options_en"])
@@ -862,9 +1013,9 @@ def update_question(id):
         q.sous_thematique_id = data["sous_thematique_id"]
 
     if "type" in data:
-        tmp_type = (data.get("type") or "").strip().lower()
-        if tmp_type not in ("liste", "text", "date"):
-            abort(400, description="type invalide: doit être 'liste', 'text' ou 'date'")
+        tmp_type = _normalize_type(data.get("type"))
+        if not tmp_type or tmp_type not in ("liste", "liste_multiple", "text", "date"):
+            abort(400, description="type invalide: doit etre 'liste', 'liste_multiple', 'text' ou 'date'")
         new_type = tmp_type
 
     new_options = q.options
@@ -875,12 +1026,18 @@ def update_question(id):
     if "options_en" in data:
         new_options_en = _normalize_options(data["options_en"])
 
-    if new_type == "liste":
+    if new_type in ("liste", "liste_multiple"):
         if new_options is None:
-            abort(400, description="`options` est requis pour le type 'liste'")
+            abort(400, description="`options` est requis pour le type 'liste' ou 'liste_multiple'")
         _validate_option_alignment(new_options, new_options_en)
-        used_values = db.session.query(Reponse.contenu).filter(Reponse.question_id == q.id).distinct().all()
-        used_values = {val for (val,) in used_values}
+        used_rows = db.session.query(Reponse.contenu).filter(Reponse.question_id == q.id).distinct().all()
+        used_values = set()
+        if prev_type == "liste_multiple":
+            for (val,) in used_rows:
+                for item in _parse_multi_contenu(val):
+                    used_values.add(item)
+        else:
+            used_values = {val for (val,) in used_rows}
         available = set(new_options or [])
         if new_options_en:
             available.update(new_options_en)
@@ -1216,21 +1373,29 @@ def create_reponse():
 
     q = Question.query.get_or_404(data["question_id"])
     qtype = getattr(q, "type_champ", "liste")
-    if qtype == "liste":
+    contenu_value = data["contenu"]
+    response_contenu = contenu_value
+    if qtype in ("liste", "liste_multiple"):
         if (not q.options or not isinstance(q.options, list)) and (not q.options_en or not isinstance(q.options_en, list)):
-            abort(400, description="La question n'a pas d'options définies.")
-        _assert_value_in_options(data["contenu"], q.options, q.options_en)
+            abort(400, description="La question n'a pas d'options definies.")
+        if qtype == "liste":
+            _assert_value_in_options(contenu_value, q.options, q.options_en)
+        else:
+            values = _normalize_multi_values(contenu_value)
+            _assert_values_in_options(values, q.options, q.options_en)
+            contenu_value = _serialize_multi_values(values)
+            response_contenu = values
     elif qtype == "text":
-        if (data["contenu"] or "").strip() == "":
-            abort(400, description="Le contenu ne peut pas être vide.")
+        if (contenu_value or "").strip() == "":
+            abort(400, description="Le contenu ne peut pas etre vide.")
     elif qtype == "date":
         try:
-            _date.fromisoformat(data["contenu"])
+            _date.fromisoformat(contenu_value)
         except Exception:
-            abort(400, description="Le contenu doit être une date au format YYYY-MM-DD.")
+            abort(400, description="Le contenu doit etre une date au format YYYY-MM-DD.")
 
     r = Reponse(
-        contenu=data["contenu"],
+        contenu=contenu_value,
         date_creation=date_creation,
         question_id=q.id,
         utilisateur_id=data["utilisateur_id"]
@@ -1240,7 +1405,7 @@ def create_reponse():
 
     return jsonify({
         "id": r.id,
-        "contenu": r.contenu,
+        "contenu": response_contenu,
         "date_creation": r.date_creation.isoformat(),
         "question_id": r.question_id,
         "utilisateur_id": r.utilisateur_id
@@ -1255,11 +1420,27 @@ def update_reponse(id):
     if "contenu" in data:
         q = Question.query.get_or_404(data.get("question_id", r.question_id))
         qtype = getattr(q, "type_champ", "liste")
-        if qtype == "liste" and (not q.options or not isinstance(q.options, list)) and (not q.options_en or not isinstance(q.options_en, list)):
-            abort(400, description="La question n'a pas d'options définies.")
-        if qtype == "liste":
-            _assert_value_in_options(data["contenu"], q.options, q.options_en)
-        r.contenu = data["contenu"]
+        contenu_value = data["contenu"]
+        if qtype in ("liste", "liste_multiple"):
+            if (not q.options or not isinstance(q.options, list)) and (not q.options_en or not isinstance(q.options_en, list)):
+                abort(400, description="La question n'a pas d'options definies.")
+            if qtype == "liste":
+                _assert_value_in_options(contenu_value, q.options, q.options_en)
+                r.contenu = contenu_value
+            else:
+                values = _normalize_multi_values(contenu_value)
+                _assert_values_in_options(values, q.options, q.options_en)
+                r.contenu = _serialize_multi_values(values)
+        elif qtype == "text":
+            if (contenu_value or "").strip() == "":
+                abort(400, description="Le contenu ne peut pas etre vide.")
+            r.contenu = contenu_value
+        elif qtype == "date":
+            try:
+                _date.fromisoformat(contenu_value)
+            except Exception:
+                abort(400, description="Le contenu doit etre une date au format YYYY-MM-DD.")
+            r.contenu = contenu_value
 
     if "date_creation" in data:
         try:
@@ -1268,34 +1449,48 @@ def update_reponse(id):
             abort(400, description="Format de date_creation invalide, attendu YYYY-MM-DD")
 
     if "question_id" in data:
-        # si on change de question, revalider la cohérence contenu/options
+        # si on change de question, revalider la coherence contenu/options
         new_q = Question.query.get_or_404(data["question_id"])
-        if "contenu" in data:
-            if getattr(new_q, "type_champ", "liste") == "liste":
-                _assert_value_in_options(data["contenu"], new_q.options, new_q.options_en)
-        else:
-            if getattr(new_q, "type_champ", "liste") == "liste":
-                _assert_value_in_options(r.contenu, new_q.options, new_q.options_en)
-        # validations pour les types non 'liste'
         new_type = getattr(new_q, "type_champ", "liste")
-        if new_type != "liste":
+        if new_type in ("liste", "liste_multiple"):
+            if (not new_q.options or not isinstance(new_q.options, list)) and (not new_q.options_en or not isinstance(new_q.options_en, list)):
+                abort(400, description="La question n'a pas d'options definies.")
+            if "contenu" in data:
+                if new_type == "liste":
+                    _assert_value_in_options(data["contenu"], new_q.options, new_q.options_en)
+                else:
+                    values = _normalize_multi_values(data["contenu"])
+                    _assert_values_in_options(values, new_q.options, new_q.options_en)
+            else:
+                if new_type == "liste":
+                    _assert_value_in_options(r.contenu, new_q.options, new_q.options_en)
+                else:
+                    values = _parse_multi_contenu(r.contenu)
+                    _assert_values_in_options(values, new_q.options, new_q.options_en)
+        else:
             value = data.get("contenu", r.contenu)
             if new_type == "text":
                 if (value or "").strip() == "":
-                    abort(400, description="Le contenu ne peut pas être vide.")
+                    abort(400, description="Le contenu ne peut pas etre vide.")
             elif new_type == "date":
                 try:
                     _date.fromisoformat(value)
                 except Exception:
-                    abort(400, description="Le contenu doit être une date au format YYYY-MM-DD.")
+                    abort(400, description="Le contenu doit etre une date au format YYYY-MM-DD.")
         r.question_id = new_q.id
 
     r.utilisateur_id = data.get("utilisateur_id", r.utilisateur_id)
 
     db.session.commit()
+    response_q = r.question
+    response_type = getattr(response_q, "type_champ", "liste") if response_q else "liste"
+    if response_type == "liste_multiple":
+        response_contenu = _parse_multi_contenu(r.contenu)
+    else:
+        response_contenu = r.contenu
     return jsonify({
         "id": r.id,
-        "contenu": r.contenu,
+        "contenu": response_contenu,
         "date_creation": r.date_creation.isoformat() if r.date_creation else None,
         "question_id": r.question_id,
         "utilisateur_id": r.utilisateur_id
@@ -1663,28 +1858,37 @@ from .mailer import send_email
 
 @api_bp.route('/notifications/send', methods=['POST'])
 def send_notification():
-    data = request.get_json()
+    data = request.get_json() or {}
     titre = data.get('titre')
     contenu = data.get('contenu')
     utilisateur_ids = data.get('utilisateur_ids')
+    broadcast = data.get('broadcast')
 
-    if not titre or not contenu or not utilisateur_ids:
-        return jsonify({"message": "titre, contenu et utilisateur_ids sont requis"}), 400
+    if not titre or not contenu:
+        return jsonify({"message": "titre et contenu sont requis"}), 400
 
-    # 1) Création de la notif + liaisons
+    users = []
+    if broadcast is True or utilisateur_ids in ("all", "*"):
+        users = Utilisateur.query.all()
+    else:
+        if not utilisateur_ids or not isinstance(utilisateur_ids, list):
+            return jsonify({"message": "utilisateur_ids (liste) ou broadcast=true est requis"}), 400
+        users = Utilisateur.query.filter(Utilisateur.id.in_(utilisateur_ids)).all()
+    users_by_id = {u.id: u for u in users}
+    users = list(users_by_id.values())
+
+    # 1) Creation de la notif + liaisons
     notif = Notification(titre=titre, contenu=contenu)
     db.session.add(notif)
     db.session.flush()
 
     destinataires = []
-    for uid in utilisateur_ids:
-        user = Utilisateur.query.get(uid)
-        if user and user.email:
-            liaison = NotificationUtilisateur(utilisateur=user, notification=notif)
-            db.session.add(liaison)
+    for user in users:
+        liaison = NotificationUtilisateur(utilisateur=user, notification=notif)
+        db.session.add(liaison)
+        if user.email:
             destinataires.append(user)
-    db.session.commit()  # commit avant d’envoyer les emails
-
+    db.session.commit()  # commit avant d'envoyer les emails
     # 2) Construction du contenu de l’email
     base_url = current_app.config.get("FRONTEND_BASE_URL", "").rstrip("/")
     # Si vous avez une page "Notifications", ajustez le lien selon votre frontend

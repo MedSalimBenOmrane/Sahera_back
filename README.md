@@ -5,7 +5,7 @@ Flask backend for Sahera that powers themes, questionnaires, notifications, and 
 ## Quick View
 - REST API under `/api` (Flask + SQLAlchemy + PostgreSQL).
 - JWT auth (24h) for users and admins; signup and password reset by email OTP.
-- Themes / subthemes / questions (list, text, date) with CSV import.
+- Themes / subthemes / questions (list, list_multiple, text, date) with CSV import.
 - Notifications stored in DB + email delivery; demographic stats and theme progress.
 - Dockerized; targets AWS Elastic Beanstalk + RDS.
 
@@ -38,13 +38,14 @@ Flask backend for Sahera that powers themes, questionnaires, notifications, and 
   - User login: `/auth/login` -> JWT (24h). Admin login: `/auth/admin/login` -> JWT (24h). Clients should clear the token or re-auth after a 401 since it expires automatically.
   - Password reset via OTP (`/auth/password/forgot/*`), verify then reset.
 - **Themes / questionnaires**
-  - CRUD themes (FR/EN fields, open/close dates), subthemes, and questions (types `liste`, `text`, `date`, bilingual options).
+  - CRUD themes (FR/EN fields, open/close dates), subthemes, and questions (types `liste`, `liste_multiple`, `text`, `date`, bilingual options).
   - CSV import for subthemes/questions of a theme (`/thematiques/<id>/import_csv`).
   - User answers linked to questions; listings by subtheme and by user.
   - Dedicated endpoints for completed/incomplete themes per user and global progress (`/thematiques/progress`).
   - `lang=fr|en` returns localized labels.
 - **Notifications**
   - Create targeted notifications, store in DB, link to users, mark read/unread, filter/paginate/sort, optional email send (`/notifications/*`).
+  - Broadcast support: `POST /notifications/send` accepts `broadcast: true` (send to all users) or `utilisateur_ids: "all"`.
 - **Dashboard stats**
   - Ethnicity/gender distribution (`/ethnicity-distribution`), age buckets (`/age-distribution`), theme progress (`/thematiques/progress`).
 - **Misc**
@@ -113,8 +114,8 @@ docker-compose up --build
 ## Dev Notes / Gotchas
 - JWT expires after 24h (users and admins): front should refresh or re-login on 401.
 - OTP (signup/reset) valid 10 min; resend allowed after 30s.
-- Bilingual options: `options` and `options_en` must have the same length for `liste` questions.
-- CSV import: required headers `sous_thematique,question,type,options` (+ optional `_en` variants); separators `|`, `;`, or `,`.
+- Bilingual options: `options` and `options_en` must have the same length for `liste` and `liste_multiple` questions.
+- CSV import: required headers `sous_thematique,question,type,options` (+ optional `_en` variants); separator `/` (utiliser `\/` si un libelle contient `/`).
 - Notifications: stored in DB then email is sent; frontend can link to `/notifications`.
 
 ## Visuals

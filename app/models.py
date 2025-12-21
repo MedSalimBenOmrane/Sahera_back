@@ -32,10 +32,10 @@ class Question(db.Model):
     texte_en = db.Column(db.Text, nullable=True)
     sous_thematique_id = db.Column(db.Integer, db.ForeignKey("sousthematique.id"), nullable=False)
 
-    # Type de champ: 'liste' | 'text' | 'date'
+    # Type de champ: 'liste' | 'liste_multiple' | 'text' | 'date'
     type_champ = db.Column(db.String(20), nullable=False, default="liste")
 
-    # Liste des choix pour le type 'liste'. Null/None pour autres types.
+    # Liste des choix pour le type 'liste' ou 'liste_multiple'. Null/None pour autres types.
     options = db.Column(JSONB, nullable=True)
     options_en = db.Column(JSONB, nullable=True)
 
@@ -46,7 +46,7 @@ class Question(db.Model):
         # Pour les questions de type 'liste', options doit être une liste non vide de chaînes uniques.
         # Pour 'text' ou 'date', options est ignoré et forcé à None.
         qtype = getattr(self, "type_champ", None)
-        if qtype == "liste":
+        if qtype in ("liste", "liste_multiple"):
             if not isinstance(options, list) or len(options) == 0:
                 raise ValueError("`options` doit être une liste non vide pour le type 'liste'.")
             cleaned, seen = [], set()
@@ -123,7 +123,7 @@ class Admin(db.Model):
 
 class Reponse(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    contenu = db.Column(db.String(255), nullable=False)
+    contenu = db.Column(db.Text, nullable=False)
     date_creation = db.Column(db.Date, nullable=True)
     question_id = db.Column(db.Integer, db.ForeignKey("question.id"), nullable=False)
     utilisateur_id = db.Column(db.Integer, db.ForeignKey("utilisateur.id"), nullable=False)
