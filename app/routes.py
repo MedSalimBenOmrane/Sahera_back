@@ -584,7 +584,7 @@ def get_incomplete_thematiques(utilisateur_id):
     questions_sq = (
         db.session.query(
             Thematique.id.label("thematique_id"),
-            func.count(Question.id).label("nb_questions")
+            func.count(func.distinct(Question.id)).label("nb_questions")
         )
         .outerjoin(SousThematique, SousThematique.thematique_id == Thematique.id)
         .outerjoin(Question, Question.sous_thematique_id == SousThematique.id)
@@ -596,7 +596,7 @@ def get_incomplete_thematiques(utilisateur_id):
     reponses_sq = (
         db.session.query(
             Thematique.id.label("thematique_id"),
-            func.count(Reponse.id).label("nb_reponses")
+            func.count(func.distinct(Reponse.question_id)).label("nb_reponses")
         )
         .outerjoin(SousThematique, SousThematique.thematique_id == Thematique.id)
         .outerjoin(Question, Question.sous_thematique_id == SousThematique.id)
@@ -654,7 +654,7 @@ def get_completed_thematiques(utilisateur_id):
     questions_sq = (
         db.session.query(
             Thematique.id.label("thematique_id"),
-            func.count(Question.id).label("nb_questions")
+            func.count(func.distinct(Question.id)).label("nb_questions")
         )
         .outerjoin(SousThematique, SousThematique.thematique_id == Thematique.id)
         .outerjoin(Question, Question.sous_thematique_id == SousThematique.id)
@@ -665,7 +665,7 @@ def get_completed_thematiques(utilisateur_id):
     reponses_sq = (
         db.session.query(
             Thematique.id.label("thematique_id"),
-            func.count(Reponse.id).label("nb_reponses")
+            func.count(func.distinct(Reponse.question_id)).label("nb_reponses")
         )
         .outerjoin(SousThematique, SousThematique.thematique_id == Thematique.id)
         .outerjoin(Question, Question.sous_thematique_id == SousThematique.id)
@@ -2193,13 +2193,14 @@ def thematiques_progress():
 
     result = []
     for t in thematiques:
-        # Rassembler tous les IDs de questions pour cette thématique
-        question_ids = [
+        # Rassembler tous les IDs de questions pour cette thématique (distincts)
+        question_ids = {
             q.id
             for st in t.sous_thematiques
             for q in st.questions
-        ]
+        }
         nb_questions = len(question_ids)
+        question_ids_list = list(question_ids)
 
         if nb_questions == 0:
             # Aucun question => personne ne peut la compléter
@@ -2210,14 +2211,14 @@ def thematiques_progress():
             completed = 0
             for u in users:
                 count_responses = (
-                    Reponse.query
+                    db.session.query(func.count(func.distinct(Reponse.question_id)))
                     .filter(
                         Reponse.utilisateur_id == u.id,
-                        Reponse.question_id.in_(question_ids)
+                        Reponse.question_id.in_(question_ids_list)
                     )
-                    .count()
+                    .scalar()
                 )
-                if count_responses == nb_questions:
+                if count_responses >= nb_questions:
                     completed += 1
             incomplete = total_users - completed
 
